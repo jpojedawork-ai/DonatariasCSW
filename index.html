@@ -472,6 +472,48 @@
             padding: 10px 24px !important;
             font-size: 0.85rem !important;
         }
+
+/* Reloj de sesión */
+.session-timer {
+    position: fixed;
+    bottom: 20px;
+    left: 20px;
+    background: #1f5e3f;
+    color: white;
+    padding: 8px 16px;
+    border-radius: 40px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    z-index: 1000;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    font-family: monospace;
+    letter-spacing: 0.5px;
+}
+
+.session-timer i {
+    font-size: 0.85rem;
+    color: #ffd700;
+}
+
+.session-timer.warning {
+    background: #e67e22;
+    animation: pulse 1s infinite;
+}
+
+.session-timer.critical {
+    background: #e74c3c;
+    animation: pulse 0.5s infinite;
+}
+
+@keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+    100% { transform: scale(1); }
+}
+
     </style>
 </head>
 <body>
@@ -539,6 +581,12 @@
 </div>
 
 <div class="app-container">
+
+<!-- Reloj de sesión -->
+<div id="sessionTimer" class="session-timer" style="display: none;">
+    <i class="fas fa-hourglass-half"></i>
+    <span id="timerText">01:00</span>
+</div>
    
    <!-- Indicador de perfil activo -->
 <div id="perfilActivoBar" class="perfil-activo" style="display: none; margin-bottom: 15px;">
@@ -806,6 +854,151 @@
     let syncInProgress = false;
     let cambiosPendientes = false;
     
+// ============================================================
+// ========== SISTEMA DE SESIÓN PERSISTENTE CON RELOJ ==========
+// ============================================================
+
+// 🔧 SOLO CAMBIAS ESTA LÍNEA - El tiempo en MINUTOS que quieres
+const MINUTOS_SESION = 1;  // <--- CAMBIA SOLO ESTE NÚMERO (1, 2, 3, 5, 10, etc.)
+
+// ========== NO TOCAR NADA DEBAJO - TODO SE CALCULA SOLO ==========
+const TIEMPO_INACTIVIDAD = MINUTOS_SESION * 60 * 1000;  // Se calcula solo
+let tiempoRestante = MINUTOS_SESION * 60;               // Se calcula solo
+let temporizadorInactividad = null;
+let temporizadorReloj = null;
+
+// Actualizar el reloj en pantalla
+function actualizarReloj() {
+    const timerElement = document.getElementById('timerText');
+    const sessionTimerDiv = document.getElementById('sessionTimer');
+    
+    if (!timerElement) return;
+    
+    const minutos = Math.floor(tiempoRestante / 60);
+    const segundos = tiempoRestante % 60;
+    timerElement.textContent = `${String(minutos).padStart(2, '0')}:${String(segundos).padStart(2, '0')}`;
+    
+    // Cambiar color según tiempo restante
+    if (tiempoRestante <= 10) {
+        sessionTimerDiv.classList.add('critical');
+        sessionTimerDiv.classList.remove('warning');
+    } else if (tiempoRestante <= 30) {
+        sessionTimerDiv.classList.add('warning');
+        sessionTimerDiv.classList.remove('critical');
+    } else {
+        sessionTimerDiv.classList.remove('warning', 'critical');
+    }
+}
+
+// Iniciar el contador regresivo del reloj
+function iniciarContadorReloj() {
+    if (temporizadorReloj) {
+        clearInterval(temporizadorReloj);
+    }
+    
+    tiempoRestante = MINUTOS_SESION * 60;  // Se calcula solo
+    actualizarReloj();
+    
+    temporizadorReloj = setInterval(() => {
+        if (tiempoRestante > 0) {
+            tiempoRestante--;
+            actualizarReloj();
+        }
+    }, 1000);
+}
+
+// Función para reiniciar el temporizador
+function reiniciarTemporizadorSesion() {
+    if (temporizadorInactividad) {
+        clearTimeout(temporizadorInactividad);
+    }
+    if (perfilActual) {
+        temporizadorInactividad = setTimeout(() => {
+            cerrarSesionPorInactividad();
+        }, TIEMPO_INACTIVIDAD);
+        reiniciarContadorReloj();
+    }
+}
+
+// Reiniciar el contador del reloj
+function reiniciarContadorReloj() {
+    tiempoRestante = MINUTOS_SESION * 60;  // Se calcula solo
+    actualizarReloj();
+}
+
+// Cerrar sesión por inactividad
+async function cerrarSesionPorInactividad() {
+    if (perfilActual) {
+        if (temporizadorReloj) {
+            clearInterval(temporizadorReloj);
+        }
+        
+        await Swal.fire({
+            title: '⏰ Sesión Expirada',
+            text: `${MINUTOS_SESION} minuto${MINUTOS_SESION > 1 ? 's' : ''} sin actividad. Su sesión ha finalizado.`,
+            icon: 'info',
+            timer: 2000,
+            showConfirmButton: false
+        });
+        cerrarSesion();
+    }
+}
+
+// Detectar actividad del usuario
+function activarDetectorInactividad() {
+    const eventos = ['click', 'mousemove', 'keypress', 'scroll', 'touchstart'];
+    eventos.forEach(evento => {
+        document.addEventListener(evento, reiniciarTemporizadorSesion);
+    });
+}
+
+// Verificar sesión al cargar
+function verificarSesionAlCargar() {
+    const sesionValida = sessionStorage.getItem('sesionActiva');
+    const perfilGuardado = localStorage.getItem('perfilActual');
+    
+    if (sesionValida === 'true' && perfilGuardado && PASSWORDS[perfilGuardado]) {
+        perfilActual = perfilGuardado;
+        const nombres = {
+            solicitante: 'Solicitante',
+            contraloria: 'Contraloría',
+            auditoria: 'Auditoría',
+            'control-interno': 'Administrador'
+        };
+        document.getElementById('perfilActivoNombre').innerText = nombres[perfilGuardado];
+        document.getElementById('perfilActivoBar').style.display = 'flex';
+        aplicarPermisosPorPerfil();
+        ocultarModalPerfil();
+        iniciarTemporizadorSesion();
+        activarDetectorInactividad();
+        mostrarRelojSesion(true);
+    } else {
+        mostrarRelojSesion(false);
+        if (document.getElementById('profileModal')) {
+            mostrarModalPerfil();
+        }
+    }
+}
+
+function iniciarTemporizadorSesion() {
+    iniciarContadorReloj();
+    reiniciarTemporizadorSesion();
+}
+
+function mostrarRelojSesion(mostrar) {
+    const sessionTimer = document.getElementById('sessionTimer');
+    if (sessionTimer) {
+        sessionTimer.style.display = mostrar ? 'flex' : 'none';
+    }
+}
+
+// Guardar sesión al recargar
+window.addEventListener('beforeunload', function() {
+    if (perfilActual) {
+        sessionStorage.setItem('sesionActiva', 'true');
+    }
+});
+
     // ============================================================
     // ========== FUNCIONES DE SUPABASE ==========
     // ============================================================
@@ -1553,30 +1746,37 @@ let modoEdicionAdmin = false;  // ← AGREGAR ESTA LÍNEA
 }
     
     function establecerPerfil(perfil) {
-        perfilActual = perfil;
-        localStorage.setItem('perfilActual', perfil);
-        
-        const nombres = {
-            solicitante: 'Solicitante',
-            contraloria: 'Contraloría',
-            auditoria: 'Auditoría',
-            'control-interno': 'Administrador'
-        };
-        
-        document.getElementById('perfilActivoNombre').innerText = nombres[perfil];
-        document.getElementById('perfilActivoBar').style.display = 'flex';
-        
-        aplicarPermisosPorPerfil();
-        refrescarContador();  // ← AGREGAR ESTA LÍNEA
-        
-        Swal.fire({
-            title: `✅ Perfil activado`,
-            html: `Ha iniciado sesión como <strong>${nombres[perfil]}</strong>`,
-            icon: 'success',
-            timer: 2000,
-            showConfirmButton: false
-        });
-    }
+    // ===== NUEVAS LÍNEAS =====
+    sessionStorage.setItem('sesionActiva', 'true');
+    iniciarTemporizadorSesion();
+    activarDetectorInactividad();
+    mostrarRelojSesion(true);
+    // ===== FIN NUEVAS LÍNEAS =====
+    
+    perfilActual = perfil;
+    localStorage.setItem('perfilActual', perfil);
+    
+    const nombres = {
+        solicitante: 'Solicitante',
+        contraloria: 'Contraloría',
+        auditoria: 'Auditoría',
+        'control-interno': 'Administrador'
+    };
+    
+    document.getElementById('perfilActivoNombre').innerText = nombres[perfil];
+    document.getElementById('perfilActivoBar').style.display = 'flex';
+    
+    aplicarPermisosPorPerfil();
+    refrescarContador();
+    
+    Swal.fire({
+        title: `✅ Perfil activado`,
+        html: `Ha iniciado sesión como <strong>${nombres[perfil]}</strong>`,
+        icon: 'success',
+        timer: 2000,
+        showConfirmButton: false
+    });
+}
     
     function aplicarPermisosPorPerfil() {
     const seccion1 = document.getElementById('section1');
@@ -2455,31 +2655,43 @@ refrescarContador();  // ← AGREGAR ESTA LÍNEA
             }
 
             function generarCuerpoCorreo(record) {
-                const docsAnexados = [];
-                const docLabels = ['Acta constitutiva / poder notarial', 'Constancia de situación fiscal (RFC)', 'Oficio de autorización SAT (donataria)', 'Comprobante de domicilio fiscal', 'Identificación oficial representante', 'Catálogo de personal autorizado', 'Acreditación del representante'];
-                if (record.documentos) {
-                    record.documentos.forEach((checked, idx) => {
-                        if (checked && docLabels[idx]) docsAnexados.push(`✓ ${docLabels[idx]}`);
-                    });
-                }
-                
-                const validacionesPreliminares = [];
-                const valLabels = ['Persona moral sin fines de lucro', 'Solicitud directa, sin intermediarios', 'Sin contraprestación o condicionamiento', 'Vista domiciliaria de verificación de existencia', 'Documentación legible y vigente', 'Representante debidamente acreditado'];
-                if (record.validaciones) {
-                    const valChecks = [record.validaciones.v1, record.validaciones.v2, record.validaciones.v3, record.validaciones.v4, record.validaciones.v4_2, record.validaciones.v5];
-                    valChecks.forEach((checked, idx) => {
-                        if (checked) validacionesPreliminares.push(`✓ ${valLabels[idx]}`);
-                    });
-                }
-                
-                let domicilioFiscal = `${record.domFiscalCalle || 'N/A'} ${record.domFiscalNumExt || ''}`;
-                if (record.domFiscalNumInt) domicilioFiscal += ` Int. ${record.domFiscalNumInt}`;
-                
-                let domicilioOperacion = `${record.domOperCalle || 'N/A'} ${record.domOperNumExt || ''}`;
-                if (record.domOperNumInt) domicilioOperacion += ` Int. ${record.domOperNumInt}`;
-                
-                return `
-===========================================
+    const docsAnexados = [];
+    const docLabels = ['Acta constitutiva / poder notarial', 'Constancia de situación fiscal (RFC)', 'Oficio de autorización SAT (donataria)', 'Comprobante de domicilio fiscal', 'Identificación oficial representante', 'Catálogo de personal autorizado', 'Acreditación del representante'];
+    if (record.documentos) {
+        record.documentos.forEach((checked, idx) => {
+            if (checked && docLabels[idx]) docsAnexados.push(`✓ ${docLabels[idx]}`);
+        });
+    }
+    
+    const validacionesPreliminares = [];
+    const valLabels = ['Persona moral sin fines de lucro', 'Solicitud directa, sin intermediarios', 'Sin contraprestación o condicionamiento', 'Vista domiciliaria de verificación de existencia', 'Documentación legible y vigente', 'Representante debidamente acreditado'];
+    if (record.validaciones) {
+        const valChecks = [record.validaciones.v1, record.validaciones.v2, record.validaciones.v3, record.validaciones.v4, record.validaciones.v4_2, record.validaciones.v5];
+        valChecks.forEach((checked, idx) => {
+            if (checked) validacionesPreliminares.push(`✓ ${valLabels[idx]}`);
+        });
+    }
+    
+    let domicilioFiscal = `${record.domFiscalCalle || 'N/A'} ${record.domFiscalNumExt || ''}`;
+    if (record.domFiscalNumInt) domicilioFiscal += ` Int. ${record.domFiscalNumInt}`;
+    
+    let domicilioOperacion = `${record.domOperCalle || 'N/A'} ${record.domOperNumExt || ''}`;
+    if (record.domOperNumInt) domicilioOperacion += ` Int. ${record.domOperNumInt}`;
+    
+    function formatearHora() {
+        const ahora = new Date();
+        let horas = ahora.getHours();
+        const minutos = String(ahora.getMinutes()).padStart(2, '0');
+        const segundos = String(ahora.getSeconds()).padStart(2, '0');
+        const ampm = horas >= 12 ? 'p.m.' : 'a.m.';
+        horas = horas % 12;
+        horas = horas === 0 ? 12 : horas;
+        return `${horas}:${minutos}:${segundos} ${ampm}`;
+    }
+    
+    const codigoFormato = document.querySelector('#cell-codigo .display-value')?.innerText || 'CM-FOR-CONTRA-XX';
+    
+    return `===========================================
 NUEVA SOLICITUD DE VALIDACIÓN DE DONATARIA
 ===========================================
 
@@ -2488,6 +2700,10 @@ NUEVA SOLICITUD DE VALIDACIÓN DE DONATARIA
 Folio de Solicitud: ${record.folioSolicitud}
 Fecha de Registro: ${new Date().toLocaleDateString('es-MX')}
 Hora de Registro: ${formatearHora()}
+
+🌐 Acceso al Sistema:
+-------------------------------------------
+https://internalcontrolsengineering.github.io/Donatarias_CSW/
 
 👤 DATOS DEL SOLICITANTE:
 -------------------------------------------
@@ -2539,7 +2755,7 @@ ${record.riesgosPreliminares ? `\nIndicios de riesgo identificados: ${record.rie
 =================================================================
 Este es un mensaje automático generado por el formato "${codigoFormato}"
 =================================================================`;
-            }
+}
 
             const cuerpoCorreo = generarCuerpoCorreo(newRecord);
             const asunto = `NUEVA SOLICITUD - Folio: ${folioUnico} - ${newRecord.razonSocial || 'Donataria'}`;
@@ -3202,37 +3418,47 @@ refrescarContador();  // ← AGREGAR ESTA LÍNEA
     }
     
     function generarCuerpoCorreoContraloria(record, validador, autorizador, procedenteFlag) {
-        const docsAnexados = [];
-        const docLabels = ['Acta constitutiva / poder notarial', 'Constancia de situación fiscal (RFC)', 'Oficio de autorización SAT (donataria)', 'Comprobante de domicilio fiscal', 'Identificación oficial representante', 'Catálogo de personal autorizado', 'Acreditación del representante'];
-        if (record.documentos) {
-            record.documentos.forEach((checked, idx) => {
-                if (checked && docLabels[idx]) docsAnexados.push(`✓ ${docLabels[idx]}`);
-            });
-        }
-        
-        const validacionesPreliminares = [];
-        const valLabels = ['Persona moral sin fines de lucro', 'Solicitud directa, sin intermediarios', 'Sin contraprestación o condicionamiento', 'Vista domiciliaria de verificación de existencia', 'Documentación legible y vigente', 'Representante debidamente acreditado'];
-        if (record.validaciones) {
-            const valChecks = [record.validaciones.v1, record.validaciones.v2, record.validaciones.v3, record.validaciones.v4, record.validaciones.v4_2, record.validaciones.v5];
-            valChecks.forEach((checked, idx) => {
-                if (checked) validacionesPreliminares.push(`✓ ${valLabels[idx]}`);
-            });
-        }
-        
-        let domicilioFiscal = `${record.domFiscalCalle || 'N/A'} ${record.domFiscalNumExt || ''}`;
-        if (record.domFiscalNumInt) domicilioFiscal += ` Int. ${record.domFiscalNumInt}`;
-        
-        let domicilioOperacion = `${record.domOperCalle || 'N/A'} ${record.domOperNumExt || ''}`;
-        if (record.domOperNumInt) domicilioOperacion += ` Int. ${record.domOperNumInt}`;
-        
-        let seccionContraloria = `
-        
-🔍 VALIDACIÓN DE CONTRALORÍA:
+    const docsAnexados = [];
+    const docLabels = ['Acta constitutiva / poder notarial', 'Constancia de situación fiscal (RFC)', 'Oficio de autorización SAT (donataria)', 'Comprobante de domicilio fiscal', 'Identificación oficial representante', 'Catálogo de personal autorizado', 'Acreditación del representante'];
+    if (record.documentos) {
+        record.documentos.forEach((checked, idx) => {
+            if (checked && docLabels[idx]) docsAnexados.push(`✓ ${docLabels[idx]}`);
+        });
+    }
+    
+    const validacionesPreliminares = [];
+    const valLabels = ['Persona moral sin fines de lucro', 'Solicitud directa, sin intermediarios', 'Sin contraprestación o condicionamiento', 'Vista domiciliaria de verificación de existencia', 'Documentación legible y vigente', 'Representante debidamente acreditado'];
+    if (record.validaciones) {
+        const valChecks = [record.validaciones.v1, record.validaciones.v2, record.validaciones.v3, record.validaciones.v4, record.validaciones.v4_2, record.validaciones.v5];
+        valChecks.forEach((checked, idx) => {
+            if (checked) validacionesPreliminares.push(`✓ ${valLabels[idx]}`);
+        });
+    }
+    
+    let domicilioFiscal = `${record.domFiscalCalle || 'N/A'} ${record.domFiscalNumExt || ''}`;
+    if (record.domFiscalNumInt) domicilioFiscal += ` Int. ${record.domFiscalNumInt}`;
+    
+    let domicilioOperacion = `${record.domOperCalle || 'N/A'} ${record.domOperNumExt || ''}`;
+    if (record.domOperNumInt) domicilioOperacion += ` Int. ${record.domOperNumInt}`;
+    
+    function formatearHora() {
+        const ahora = new Date();
+        let horas = ahora.getHours();
+        const minutos = String(ahora.getMinutes()).padStart(2, '0');
+        const segundos = String(ahora.getSeconds()).padStart(2, '0');
+        const ampm = horas >= 12 ? 'p.m.' : 'a.m.';
+        horas = horas % 12;
+        horas = horas === 0 ? 12 : horas;
+        return `${horas}:${minutos}:${segundos} ${ampm}`;
+    }
+    
+    let seccionValidacion = `
+🔍 VALIDACIÓN DE CONTRALORÍA: 
 -------------------------------------------
 Fecha de Validación: ${record.contraloria.fecha}
 Validación: ${procedenteFlag ? '✅ PROCEDENTE' : '❌ IMPROCEDENTE'}
 
-📋 Datos de Validación:
+📋 Datos de Validación: 
 - Constancia de Situación Fiscal: ${record.constanciaFiscal || 'N/A'}
 - Efos (art. 69-b): ${record.efos || 'N/A'}
 - Estatus Padrón: ${record.estatusPadron || 'N/A'}
@@ -3240,41 +3466,44 @@ Validación: ${procedenteFlag ? '✅ PROCEDENTE' : '❌ IMPROCEDENTE'}
 
 💬 Comentarios de Contraloría: ${record.comentariosContraloria || 'Sin comentarios'}
 
-👤 VALIDADOR DE CONTRALORÍA:
+👤 VALIDADOR DE CONTRALORÍA: 
 -------------------------------------------
 Nombre: ${validador.nombre}
 Puesto: ${validador.puesto}
 Correo: ${validador.email}`;
-        
-        if (procedenteFlag && autorizador) {
-            seccionContraloria += `
+    
+    if (procedenteFlag && autorizador) {
+        seccionValidacion += `
 
-👔 AUTORIZADOR POR CONTRALORÍA:
+👔 AUTORIZADOR POR CONTRALORÍA: 
 -------------------------------------------
 Nombre: ${autorizador.nombre}
 Puesto: ${autorizador.puesto}
 Correo: ${autorizador.email}`;
-        }
-        
-        return `===========================================
-VALIDACIÓN DE CONTRALORÍA - ACTUALIZACIÓN DE SOLICITUD
-===========================================
-
-📋 DATOS GENERALES DE LA SOLICITUD:
--------------------------------------------
+    }
+    
+    return `=====================================================
+VALIDACIÓN DE CONTRALORÍA - ACTUALIZACIÓN DE SOLICITUD 
+=====================================================
+📋 DATOS GENERALES DE LA SOLICITUD: 
+------------------------------------------- 
 Folio de Solicitud: ${record.folioSolicitud}
 Fecha de Validación: ${record.contraloria.fecha}
 Hora de Validación: ${formatearHora()}
 
-👤 DATOS DEL SOLICITANTE ORIGINAL:
+🌐 Acceso al Sistema:
 -------------------------------------------
+https://internalcontrolsengineering.github.io/Donatarias_CSW/
+
+👤 DATOS DEL SOLICITANTE ORIGINAL: 
+------------------------------------------- 
 Nombre: ${record.solicitante?.nombre || 'N/A'}
 Puesto: ${record.solicitante?.puesto || 'N/A'}
 Correo: ${record.solicitante?.email || 'N/A'}
 Fecha de Registro: ${record.solicitante?.fecha || 'N/A'}
 
-🏢 DATOS DE LA INSTITUCIÓN:
--------------------------------------------
+🏢 DATOS DE LA INSTITUCIÓN: 
+------------------------------------------- 
 Razón Social: ${record.razonSocial || 'N/A'}
 RFC: ${record.rfc || 'N/A'}
 Régimen Fiscal: ${record.regimenFiscal || 'N/A'}
@@ -3285,8 +3514,8 @@ Representante Legal: ${record.representante || 'N/A'}
 Poder Notarial: ${record.poderNotarial || 'N/A'}
 Objeto Social: ${record.objetoSocial || 'N/A'}
 
-📍 DOMICILIO FISCAL:
--------------------------------------------
+📍 DOMICILIO FISCAL: 
+------------------------------------------- 
 Calle: ${domicilioFiscal}
 Colonia: ${record.domFiscalColonia || 'N/A'}
 Localidad: ${record.domFiscalLocalidad || 'N/A'}
@@ -3294,8 +3523,8 @@ Municipio: ${record.domFiscalMunicipio || 'N/A'}
 Estado: ${record.domFiscalEstado || 'N/A'}
 Código Postal: ${record.domFiscalCP || 'N/A'}
 
-📍 DOMICILIO DE OPERACIÓN:
--------------------------------------------
+📍 DOMICILIO DE OPERACIÓN: 
+------------------------------------------- 
 Calle: ${domicilioOperacion}
 Colonia: ${record.domOperColonia || 'N/A'}
 Localidad: ${record.domOperLocalidad || 'N/A'}
@@ -3303,21 +3532,22 @@ Municipio: ${record.domOperMunicipio || 'N/A'}
 Estado: ${record.domOperEstado || 'N/A'}
 Código Postal: ${record.domOperCP || 'N/A'}
 
-📎 DOCUMENTACIÓN ANEXADA:
--------------------------------------------
+📎 DOCUMENTACIÓN ANEXADA: 
+------------------------------------------- 
 ${docsAnexados.length > 0 ? docsAnexados.join('\n') : '✓ Ningún documento seleccionado'}
 ${record.obsDocs ? `\nObservaciones de documentación: ${record.obsDocs}` : ''}
 
-✅ VALIDACIONES PRELIMINARES:
--------------------------------------------
+✅ VALIDACIONES PRELIMINARES: 
+------------------------------------------- 
 ${validacionesPreliminares.length > 0 ? validacionesPreliminares.join('\n') : '✓ Ninguna validación seleccionada'}
 ${record.riesgosPreliminares ? `\nIndicios de riesgo identificados: ${record.riesgosPreliminares}` : ''}
-${seccionContraloria}
+        
+${seccionValidacion}
 
-=================================================================
-Este es un mensaje automático generado por el formato "${codigoFormato}"
+================================================================= 
+Este es un mensaje automático generado por el formato "${codigoFormato}" 
 =================================================================`;
-    }
+}
     
     const cuerpoCorreo = generarCuerpoCorreoContraloria(record, validadorValues, autorizadorValues, procedente);
     const estatusTexto = procedente ? 'PROCEDENTE' : 'IMPROCEDENTE';
@@ -3707,43 +3937,53 @@ async function guardarValidacionAuditoria() {
     }
     
     function generarCuerpoCorreoAuditoria(record, validador, autorizador, procedenteFlag) {
-        const docsAnexados = [];
-        const docLabels = ['Acta constitutiva / poder notarial', 'Constancia de situación fiscal (RFC)', 'Oficio de autorización SAT (donataria)', 'Comprobante de domicilio fiscal', 'Identificación oficial representante', 'Catálogo de personal autorizado', 'Acreditación del representante'];
-        if (record.documentos) {
-            record.documentos.forEach((checked, idx) => {
-                if (checked && docLabels[idx]) docsAnexados.push(`✓ ${docLabels[idx]}`);
-            });
-        }
-        
-        const validacionesPreliminares = [];
-        const valLabels = ['Persona moral sin fines de lucro', 'Solicitud directa, sin intermediarios', 'Sin contraprestación o condicionamiento', 'Vista domiciliaria de verificación de existencia', 'Documentación legible y vigente', 'Representante debidamente acreditado'];
-        if (record.validaciones) {
-            const valChecks = [record.validaciones.v1, record.validaciones.v2, record.validaciones.v3, record.validaciones.v4, record.validaciones.v4_2, record.validaciones.v5];
-            valChecks.forEach((checked, idx) => {
-                if (checked) validacionesPreliminares.push(`✓ ${valLabels[idx]}`);
-            });
-        }
-        
-        let domicilioFiscal = `${record.domFiscalCalle || 'N/A'} ${record.domFiscalNumExt || ''}`;
-        if (record.domFiscalNumInt) domicilioFiscal += ` Int. ${record.domFiscalNumInt}`;
-        
-        let domicilioOperacion = `${record.domOperCalle || 'N/A'} ${record.domOperNumExt || ''}`;
-        if (record.domOperNumInt) domicilioOperacion += ` Int. ${record.domOperNumInt}`;
-        
-        const validacionesSitio = [];
-        if (record.existenciaFisica) validacionesSitio.push('✓ Domicilio existente');
-        if (record.operacionReal) validacionesSitio.push('✓ Operación real');
-        if (record.infraestructura) validacionesSitio.push('✓ Personal autorizado');
-        if (record.personalObservado) validacionesSitio.push('✓ Actividad consistente');
-        
-        let seccionContraloria = `
-        
-🔍 VALIDACIÓN DE CONTRALORÍA (Previa):
--------------------------------------------
+    const docsAnexados = [];
+    const docLabels = ['Acta constitutiva / poder notarial', 'Constancia de situación fiscal (RFC)', 'Oficio de autorización SAT (donataria)', 'Comprobante de domicilio fiscal', 'Identificación oficial representante', 'Catálogo de personal autorizado', 'Acreditación del representante'];
+    if (record.documentos) {
+        record.documentos.forEach((checked, idx) => {
+            if (checked && docLabels[idx]) docsAnexados.push(`✓ ${docLabels[idx]}`);
+        });
+    }
+    
+    const validacionesPreliminares = [];
+    const valLabels = ['Persona moral sin fines de lucro', 'Solicitud directa, sin intermediarios', 'Sin contraprestación o condicionamiento', 'Vista domiciliaria de verificación de existencia', 'Documentación legible y vigente', 'Representante debidamente acreditado'];
+    if (record.validaciones) {
+        const valChecks = [record.validaciones.v1, record.validaciones.v2, record.validaciones.v3, record.validaciones.v4, record.validaciones.v4_2, record.validaciones.v5];
+        valChecks.forEach((checked, idx) => {
+            if (checked) validacionesPreliminares.push(`✓ ${valLabels[idx]}`);
+        });
+    }
+    
+    let domicilioFiscal = `${record.domFiscalCalle || 'N/A'} ${record.domFiscalNumExt || ''}`;
+    if (record.domFiscalNumInt) domicilioFiscal += ` Int. ${record.domFiscalNumInt}`;
+    
+    let domicilioOperacion = `${record.domOperCalle || 'N/A'} ${record.domOperNumExt || ''}`;
+    if (record.domOperNumInt) domicilioOperacion += ` Int. ${record.domOperNumInt}`;
+    
+    const validacionesSitio = [];
+    if (record.existenciaFisica) validacionesSitio.push('✓\tDomicilio existente');
+    if (record.operacionReal) validacionesSitio.push('✓\tOperación real');
+    if (record.infraestructura) validacionesSitio.push('✓\tPersonal autorizado');
+    if (record.personalObservado) validacionesSitio.push('✓\tActividad consistente');
+    
+    function formatearHora() {
+        const ahora = new Date();
+        let horas = ahora.getHours();
+        const minutos = String(ahora.getMinutes()).padStart(2, '0');
+        const segundos = String(ahora.getSeconds()).padStart(2, '0');
+        const ampm = horas >= 12 ? 'p.m.' : 'a.m.';
+        horas = horas % 12;
+        horas = horas === 0 ? 12 : horas;
+        return `${horas}:${minutos}:${segundos} ${ampm}`;
+    }
+    
+    let seccionContraloria = `
+🔍 VALIDACIÓN DE CONTRALORÍA (Previa): 
+------------------------------------------- 
 Fecha de Validación: ${record.contraloria?.fecha || 'N/A'}
-Validación: ${record.contraloria?.validacion === 'Procedente' ? '✅ PROCEDENTE' : (record.contraloria?.validacion === 'Improcedente' ? '❌ IMPROCEDENTE' : 'N/A')}
+Validación: ${record.contraloria?.validacion === 'Procedente' ? '✅ PROCEDENTE' : '❌ IMPROCEDENTE'}
 
-📋 Datos de Validación de Contraloría:
+📋 Datos de Validación de Contraloría: 
 - Constancia de Situación Fiscal: ${record.constanciaFiscal || 'N/A'}
 - Efos (art. 69-b): ${record.efos || 'N/A'}
 - Estatus Padrón: ${record.estatusPadron || 'N/A'}
@@ -3751,74 +3991,76 @@ Validación: ${record.contraloria?.validacion === 'Procedente' ? '✅ PROCEDENTE
 
 💬 Comentarios de Contraloría: ${record.comentariosContraloria || 'Sin comentarios'}
 
-👤 VALIDADOR DE CONTRALORÍA:
-${record.contraloria?.validador ? `Nombre: ${record.contraloria.validador.nombre}
-Puesto: ${record.contraloria.validador.puesto}
-Correo: ${record.contraloria.validador.email}` : 'No registrado'}`;
-        
-        if (record.contraloria?.autorizador) {
-            seccionContraloria += `
+👤 VALIDADOR DE CONTRALORÍA: 
+Nombre: ${record.contraloria?.validador?.nombre || 'N/A'}
+Puesto: ${record.contraloria?.validador?.puesto || 'N/A'}
+Correo: ${record.contraloria?.validador?.email || 'N/A'}`;
+    
+    if (record.contraloria?.autorizador) {
+        seccionContraloria += `
 
-👔 AUTORIZADOR POR CONTRALORÍA:
+👔 AUTORIZADOR POR CONTRALORÍA: 
 Nombre: ${record.contraloria.autorizador.nombre}
 Puesto: ${record.contraloria.autorizador.puesto}
 Correo: ${record.contraloria.autorizador.email}`;
-        }
+    }
+    
+    let seccionAuditoria = `
         
-        let seccionAuditoria = `
-        
-🔍 VALIDACIÓN DE AUDITORÍA (Actual):
--------------------------------------------
+🔍 VALIDACIÓN DE AUDITORÍA (Actual): 
+------------------------------------------- 
 Fecha de Validación: ${record.auditoria.fecha}
 Validación: ${procedenteFlag ? '✅ PROCEDENTE' : '❌ IMPROCEDENTE'}
 
-📋 Datos de la Visita de Auditoría:
+📋 Datos de la Visita de Auditoría: 
 - Fecha de Visita: ${record.fechaVisita || 'N/A'}
 - Responsable(s) de la visita: ${record.responsableVisita || 'N/A'}
 
-✅ Validaciones en sitio:
+✅ Validaciones en sitio: 
 ${validacionesSitio.length > 0 ? validacionesSitio.join('\n') : '✓ Ninguna validación seleccionada'}
 
-📝 Hallazgos y evidencia:
-${record.hallazgosVisita || 'Sin hallazgos registrados'}
+📝 Hallazgos y evidencia: ${record.hallazgosVisita || 'Sin hallazgos registrados'}
 
 💬 Recomendación Técnica: ${record.recomendacionTecnica || 'N/A'}
 
-👤 VALIDADOR DE AUDITORÍA:
--------------------------------------------
+👤 VALIDADOR DE AUDITORÍA: 
+------------------------------------------- 
 Nombre: ${validador.nombre}
 Puesto: ${validador.puesto}
 Correo: ${validador.email}`;
-        
-        if (procedenteFlag && autorizador) {
-            seccionAuditoria += `
+    
+    if (procedenteFlag && autorizador) {
+        seccionAuditoria += `
 
-👔 AUTORIZADOR POR AUDITORÍA:
--------------------------------------------
+👔 AUTORIZADOR POR AUDITORÍA: 
+------------------------------------------- 
 Nombre: ${autorizador.nombre}
 Puesto: ${autorizador.puesto}
 Correo: ${autorizador.email}`;
-        }
-        
-        return `===========================================
-VALIDACIÓN DE AUDITORÍA - ACTUALIZACIÓN DE SOLICITUD
-===========================================
-
-📋 DATOS GENERALES DE LA SOLICITUD:
--------------------------------------------
+    }
+    
+    return `=========================================== 
+VALIDACIÓN DE AUDITORÍA - ACTUALIZACIÓN DE SOLICITUD 
+=========================================== 
+📋 DATOS GENERALES DE LA SOLICITUD: 
+------------------------------------------- 
 Folio de Solicitud: ${record.folioSolicitud}
 Fecha de Validación de Auditoría: ${record.auditoria.fecha}
 Hora de Validación: ${formatearHora()}
 
-👤 DATOS DEL SOLICITANTE ORIGINAL:
--------------------------------------------
+🌐 Acceso al Sistema: 
+------------------------------------------- 
+https://internalcontrolsengineering.github.io/Donatarias_CSW/
+
+👤 DATOS DEL SOLICITANTE ORIGINAL: 
+------------------------------------------- 
 Nombre: ${record.solicitante?.nombre || 'N/A'}
 Puesto: ${record.solicitante?.puesto || 'N/A'}
 Correo: ${record.solicitante?.email || 'N/A'}
 Fecha de Registro: ${record.solicitante?.fecha || 'N/A'}
 
-🏢 DATOS DE LA INSTITUCIÓN:
--------------------------------------------
+🏢 DATOS DE LA INSTITUCIÓN: 
+------------------------------------------- 
 Razón Social: ${record.razonSocial || 'N/A'}
 RFC: ${record.rfc || 'N/A'}
 Régimen Fiscal: ${record.regimenFiscal || 'N/A'}
@@ -3829,8 +4071,8 @@ Representante Legal: ${record.representante || 'N/A'}
 Poder Notarial: ${record.poderNotarial || 'N/A'}
 Objeto Social: ${record.objetoSocial || 'N/A'}
 
-📍 DOMICILIO FISCAL:
--------------------------------------------
+📍 DOMICILIO FISCAL: 
+------------------------------------------- 
 Calle: ${domicilioFiscal}
 Colonia: ${record.domFiscalColonia || 'N/A'}
 Localidad: ${record.domFiscalLocalidad || 'N/A'}
@@ -3838,8 +4080,8 @@ Municipio: ${record.domFiscalMunicipio || 'N/A'}
 Estado: ${record.domFiscalEstado || 'N/A'}
 Código Postal: ${record.domFiscalCP || 'N/A'}
 
-📍 DOMICILIO DE OPERACIÓN:
--------------------------------------------
+📍 DOMICILIO DE OPERACIÓN: 
+------------------------------------------- 
 Calle: ${domicilioOperacion}
 Colonia: ${record.domOperColonia || 'N/A'}
 Localidad: ${record.domOperLocalidad || 'N/A'}
@@ -3847,22 +4089,22 @@ Municipio: ${record.domOperMunicipio || 'N/A'}
 Estado: ${record.domOperEstado || 'N/A'}
 Código Postal: ${record.domOperCP || 'N/A'}
 
-📎 DOCUMENTACIÓN ANEXADA:
--------------------------------------------
+📎 DOCUMENTACIÓN ANEXADA: 
+------------------------------------------- 
 ${docsAnexados.length > 0 ? docsAnexados.join('\n') : '✓ Ningún documento seleccionado'}
 ${record.obsDocs ? `\nObservaciones de documentación: ${record.obsDocs}` : ''}
 
-✅ VALIDACIONES PRELIMINARES:
--------------------------------------------
+✅ VALIDACIONES PRELIMINARES: 
+------------------------------------------- 
 ${validacionesPreliminares.length > 0 ? validacionesPreliminares.join('\n') : '✓ Ninguna validación seleccionada'}
 ${record.riesgosPreliminares ? `\nIndicios de riesgo identificados: ${record.riesgosPreliminares}` : ''}
 ${seccionContraloria}
 ${seccionAuditoria}
 
-=================================================================
-Este es un mensaje automático generado por el formato "${codigoFormato}"
+================================================================= 
+Este es un mensaje automático generado por el formato "CM-FOR-CONTRA-XX" 
 =================================================================`;
-    }
+}
     
     const cuerpoCorreo = generarCuerpoCorreoAuditoria(record, validadorValues, autorizadorValues, procedente);
     const estatusTexto = procedente ? 'PROCEDENTE' : 'IMPROCEDENTE';
@@ -5496,6 +5738,8 @@ refrescarContador();  // ← AGREGAR ESTA LÍNEA
                 document.getElementById('paginaDisplay').innerText = `${paginaGuardada} de 4`;
             }
         }
+
+verificarSesionAlCargar();
         
         localStorage.removeItem('tabActiva');
         localStorage.removeItem('paginaActiva');
